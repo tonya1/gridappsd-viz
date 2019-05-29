@@ -2,7 +2,6 @@ FROM node:boron
 
 ARG TIMESTAMP
 ARG VERSION
-ENV BUILD_VERSION ${VERSION}
 
 WORKDIR /gridappsd
 
@@ -13,7 +12,7 @@ COPY . /gridappsd/viz/
 WORKDIR /gridappsd/viz
 
 RUN npm install  \
-    && npm run build
+    && npm run build $VERSION
 
 RUN echo $TIMESTAMP > /gridappsd/viz/dockerbuildversion.txt
 

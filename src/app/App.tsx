@@ -5,11 +5,11 @@ import { map, take, filter } from 'rxjs/operators';
 import { Application } from '@shared/Application';
 import { AvailableApplicationsAndServices } from './available-applications-and-services';
 import { DataBrowser } from './data-browser';
-import { FeederModel } from '@shared/FeederModel';
+import { FeederModel } from '@shared/topology';
 import { GetAllFeederModelsRequest } from './models/message-requests/GetAllFeederModelsRequest';
 import { LabelContainer } from './simulation/label';
 import { MeasurementChartContainer } from './simulation/measurement-chart';
-import { ModelDictionaryMeasurement } from './models/model-dictionary';
+import { ModelDictionaryMeasurement, ModelDictionary } from '@shared/topology/model-dictionary';
 import { Navigation } from './navigation';
 import { OverlayService } from '@shared/overlay';
 import { SimulationConfiguration } from '@shared/simulation';
@@ -25,6 +25,12 @@ import { GetModelDictionaryRequest } from './models/message-requests/GetModelDic
 import {
   GetAvailableApplicationsRequest, GetAvailableApplicationsRequestPayload
 } from './models/message-requests/GetAvailableApplicationsAndServicesRequest';
+import { DEFAULT_SIMULATION_CONFIGURATION } from './models/default-simulation-configuration';
+import { ModelDictionaryTracker } from './simulation/simulation-configuration/services/ModelDictionaryTracker';
+import { StateStore } from '@shared/state-store';
+import { DEFAULT_APPLICATION_STATE } from './models/default-application-state';
+import { TabGroup, Tab } from '@shared/tabs';
+import { EventSummary } from './simulation/event-summary/EventSummary';
 
 import './App.scss';
 
@@ -32,7 +38,7 @@ interface Props {
 }
 
 interface State {
-  feederModels: FeederModel;
+  feederModel: FeederModel;
   availableApplications: Application[];
 }
 
@@ -41,20 +47,25 @@ export class App extends React.Component<Props, State> {
   readonly componentMrids = new Map<string, string & string[]>();
   readonly componentPhases = new Map<string, string[]>();
 
+  private _stateStore = StateStore.getInstance();
+
   private readonly _stompClientService = StompClientService.getInstance();
   private readonly _simulationOutputService = SimulationOutputService.getInstance();
   private readonly _overlayService = OverlayService.getInstance();
   private readonly _simulationQueue = SimulationQueue.getInstance();
-  private readonly _modelDictionaryMeasurementsPerSimulationName: { [name: string]: { [mRID: string]: ModelDictionaryMeasurement } } = {};
-  private readonly _availableModelDictionaries = {};
+  private readonly _modelDictionaryTracker = ModelDictionaryTracker.getInstance();
+  private readonly _modelDictionaryMeasurementsPerSimulationName = new Map<string, Map<string, ModelDictionaryMeasurement>>();
+  private readonly _availableModelDictionaries = new Map<string, ModelDictionary>();
 
   constructor(props: any) {
     super(props);
 
     this.state = {
-      feederModels: null,
+      feederModel: null,
       availableApplications: null
     };
+
+    this._stateStore.initialize(DEFAULT_APPLICATION_STATE);
   }
 
   componentDidCatch() {
@@ -94,13 +105,9 @@ export class App extends React.Component<Props, State> {
   }
 
   private _fetchFeederModels() {
-    if (sessionStorage.getItem('regions')) {
-      const regions = JSON.parse(sessionStorage.getItem('regions'));
-      const subregions = JSON.parse(sessionStorage.getItem('subregions'));
-      const lines = JSON.parse(sessionStorage.getItem('lines'));
-      const mRIDs = lines.map((line, index) => ({ displayName: line.name, value: line.mRID, index }));
-      this.setState({ feederModels: { regions, subregions, lines, mRIDs } });
-    }
+    const feederModel = sessionStorage.getItem('feederModel');
+    if (feederModel)
+      this.setState({ feederModel: JSON.parse(feederModel) });
     else {
       const getAllFeederModelsRequest = new GetAllFeederModelsRequest();
       this._subscribeToFeederModelsTopic(getAllFeederModelsRequest.replyTo);
@@ -117,40 +124,86 @@ export class App extends React.Component<Props, State> {
       .pipe(map(body => JSON.parse(body)))
       .subscribe({
         next: payload => {
-          const regions = [];
-          const subregions = [];
-          const lines = [];
+          const feederModel = {} as FeederModel;
           if (typeof payload.data === 'string')
             payload.data = JSON.parse(payload.data);
-          payload.data.results.bindings.forEach((binding, index) => {
-            this._addIfNotExists(
-              regions,
-              { regionName: binding.regionName.value, regionID: binding.regionID.value, index },
-              'regionName'
+          /*
+              payload.data.results.bindings is an array of
+                {
+                    "name": {
+                        "type": "literal",
+                        "value": string
+                    },
+                    "mRID": {
+                        "type": "literal",
+                        "value": string
+                    },
+                    "substationName": {
+                        "type": "literal",
+                        "value": string
+                    },
+                    "substationID": {
+                        "type": "literal",
+                        "value": string
+                    },
+                    "subregionName": {
+                        "type": "literal",
+                        "value": string
+                    },
+                    "subregionID": {
+                        "type": "literal",
+                        "value": string
+                    },
+                    "regionName": {
+                        "type": "literal",
+                        "value": string
+                    },
+                    "regionID": {
+                        "type": "literal",
+                        "value": string
+                    }
+                }
+          */
+          for (const binding of payload.data.results.bindings) {
+            const regionId = binding.regionID.value;
+            if (!(regionId in feederModel))
+              feederModel[regionId] = {
+                id: regionId,
+                name: binding.regionName.value,
+                lines: [],
+                subregions: []
+              };
+            // If a line with given name by binding.name.value already exists, then filter it out
+            // to push the new one on
+            this._pushIfNameDoesNotExist(
+              feederModel[regionId].lines,
+              binding.name.value,
+              {
+                name: binding.name.value,
+                id: binding.mRID.value,
+                subregionId: binding.subregionID.value
+              }
             );
-            this._addIfNotExists(
-              subregions,
-              { subregionName: binding.subregionName.value, subregionID: binding.subregionID.value, index },
-              'subregionName'
+            // If a subregion with given name by binding.subregionName.value already exists, then filter it out
+            // to push the new one on
+            this._pushIfNameDoesNotExist(
+              feederModel[regionId].subregions,
+              binding.subregionName.value,
+              {
+                name: binding.subregionName.value,
+                id: binding.subregionID.value
+              }
             );
-            this._addIfNotExists(
-              lines,
-              { name: binding.name.value, mRID: binding.mRID.value, index },
-              'name'
-            );
-          });
-          const mRIDs = lines.map((line, index) => ({ displayName: line.name, value: line.mRID, index }));
-          this.setState({ feederModels: { regions, subregions, lines, mRIDs } });
-          sessionStorage.setItem('regions', JSON.stringify(regions));
-          sessionStorage.setItem('subregions', JSON.stringify(subregions));
-          sessionStorage.setItem('lines', JSON.stringify(lines));
+          }
+          this.setState({ feederModel });
+          sessionStorage.setItem('feederModel', JSON.stringify(feederModel));
         }
       });
   }
 
-  private _addIfNotExists(array: any[], object: any, key: string) {
-    if (array.every(e => e[key] !== object[key]))
-      array.push(object);
+  private _pushIfNameDoesNotExist(array: Array<{ name: string; id: string }>, nameValue: string, value: any) {
+    if (array.every(item => item.name !== nameValue))
+      array.push(value);
   }
 
   render() {
@@ -159,7 +212,9 @@ export class App extends React.Component<Props, State> {
         this.shouldRedirect ? this.redirect() :
           <>
             <Navigation
-              onShowSimulationConfigForm={(config: SimulationConfiguration) => this.showSimulationConfigForm(config, props.history)} />
+              onShowSimulationConfigForm={
+                (config: SimulationConfiguration) => this.showSimulationConfigForm(config, props.history)
+              } />
             <Route
               exact
               path='/topology'
@@ -167,12 +222,19 @@ export class App extends React.Component<Props, State> {
                 return (
                   <>
                     <div className='topology-renderer-simulation-status-logger-measurement-graphs'>
-                      <div className='topology-renderer-simulation-status-logger'>
+                      <div>
                         <SimulationControlContainer />
-                        <TopologyRendererContainer
-                          mRIDs={this.componentMrids}
-                          phases={this.componentPhases} />
-                        <SimulationStatusLogContainer />
+                        <TabGroup>
+                          <Tab label='Simulation'>
+                            <TopologyRendererContainer
+                              mRIDs={this.componentMrids}
+                              phases={this.componentPhases} />
+                            <SimulationStatusLogContainer />
+                          </Tab>
+                          <Tab label='Events'>
+                            <EventSummary />
+                          </Tab>
+                        </TabGroup>
                       </div>
                       <div className='measurement-charts'>
                         <MeasurementChartContainer />
@@ -182,9 +244,17 @@ export class App extends React.Component<Props, State> {
                   </>
                 );
               }} />
-            <Route exact path='/applications' component={AvailableApplicationsAndServices} />
-            <Route exact path='/stomp-client' component={StompClientContainer} />
-            <Route path='/browse' component={props => <DataBrowser mRIDs={this.state.feederModels.mRIDs} match={props.match} />} />
+            <Route
+              exact
+              path='/applications'
+              component={AvailableApplicationsAndServices} />
+            <Route
+              exact
+              path='/stomp-client'
+              component={StompClientContainer} />
+            <Route
+              path='/browse'
+              component={props => <DataBrowser feederModel={this.state.feederModel} match={props.match} />} />
             <WebsocketStatusWatcher />
           </>
       } />
@@ -197,13 +267,15 @@ export class App extends React.Component<Props, State> {
   }
 
   showSimulationConfigForm(config: SimulationConfiguration, browserHistory) {
+    if (config === null)
+      config = DEFAULT_SIMULATION_CONFIGURATION;
     this._overlayService.show(
       <SimulationConfigurationEditor
-        feederModels={this.state.feederModels}
-        onSubmit={config => this._onSimulationConfigFormSubmitted(config, browserHistory)}
+        feederModel={this.state.feederModel}
+        onSubmit={updatedConfig => this._onSimulationConfigFormSubmitted(updatedConfig, browserHistory)}
         onClose={() => this._overlayService.hide()}
         onMRIDChanged={(mRID, simulationName) => {
-          if (!this._modelDictionaryMeasurementsPerSimulationName[simulationName])
+          if (!this._modelDictionaryMeasurementsPerSimulationName.has(simulationName))
             this._fetchModelDictionary(mRID, simulationName);
         }}
         availableApplications={this.state.availableApplications}
@@ -222,17 +294,18 @@ export class App extends React.Component<Props, State> {
   }
 
   private _fetchModelDictionary(mrid: string, simulationName: string) {
-    if (mrid in this._availableModelDictionaries)
-      return;
-    const getModelDictionaryRequest = new GetModelDictionaryRequest();
-    this._availableModelDictionaries[mrid] = true;
-    getModelDictionaryRequest.requestBody.parameters.model_id = mrid;
-    this._subscribeToModelDictionaryTopic(getModelDictionaryRequest, simulationName);
-    this._stompClientService.send(
-      getModelDictionaryRequest.url,
-      { 'reply-to': getModelDictionaryRequest.replyTo },
-      JSON.stringify(getModelDictionaryRequest.requestBody)
-    );
+    if (!this._availableModelDictionaries.has(simulationName)) {
+      const getModelDictionaryRequest = new GetModelDictionaryRequest();
+      getModelDictionaryRequest.requestBody.parameters.model_id = mrid;
+      this._subscribeToModelDictionaryTopic(getModelDictionaryRequest, simulationName);
+      this._stompClientService.send(
+        getModelDictionaryRequest.url,
+        { 'reply-to': getModelDictionaryRequest.replyTo },
+        JSON.stringify(getModelDictionaryRequest.requestBody)
+      );
+    }
+    else
+      this._modelDictionaryTracker.selectCurrentModelDictionary(this._availableModelDictionaries.get(simulationName));
   }
 
   private _subscribeToModelDictionaryTopic(getModelDictionaryRequest: GetModelDictionaryRequest, simulationName: string) {
@@ -242,24 +315,25 @@ export class App extends React.Component<Props, State> {
         next: payload => {
           if (typeof payload.data === 'string')
             payload.data = JSON.parse(payload.data);
-          const feeders = payload.data.feeders[0];
-          const modelDictionaryMeasurements = feeders.measurements.reduce((accummulator, measurement) => {
-            accummulator[measurement.mRID] = measurement;
-            return accummulator;
-          }, {});
+          const modelDictionary = payload.data.feeders[0];
+          const modelDictionaryMeasurements = new Map<string, ModelDictionaryMeasurement>();
+          for (const measurement of modelDictionary.measurements)
+            modelDictionaryMeasurements.set(measurement.mRID, measurement);
+          this._collectMRIDsAndPhasesForComponents(modelDictionary);
           this._simulationOutputService.setModelDictionaryMeasurements(modelDictionaryMeasurements);
-          this._modelDictionaryMeasurementsPerSimulationName[simulationName] = modelDictionaryMeasurements;
-          this._collectMRIDsAndPhasesForComponents(feeders);
+          this._modelDictionaryMeasurementsPerSimulationName.set(simulationName, modelDictionaryMeasurements);
+          this._availableModelDictionaries.set(simulationName, modelDictionary);
+          this._modelDictionaryTracker.selectCurrentModelDictionary(this._availableModelDictionaries.get(simulationName));
         }
       });
   }
 
-  private _collectMRIDsAndPhasesForComponents(feeders: any) {
-    for (const swjtch of feeders.switches)
+  private _collectMRIDsAndPhasesForComponents(modelDictionary: any) {
+    for (const swjtch of modelDictionary.switches)
       this.componentMrids.set(swjtch.name, swjtch.mRID);
-    for (const capacitor of feeders.capacitors)
+    for (const capacitor of modelDictionary.capacitors)
       this.componentMrids.set(capacitor.name, capacitor.mRID);
-    for (const regulator of feeders.regulators) {
+    for (const regulator of modelDictionary.regulators) {
       this.componentMrids.set(regulator.bankName, regulator.mRID);
       // Only interested in regulators' phases for now, need phases for regulator menus
       this.componentPhases.set(regulator.bankName, (regulator.bankPhases || '').split(''));

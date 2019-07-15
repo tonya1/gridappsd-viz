@@ -3,9 +3,10 @@
     display: flex;
     justify-content: flex-end;
     align-items: center;
-    border-bottom: 2px solid rgba(0, 0, 0, 0.2);
-    background-color: #fff;
-    z-index: 1;
+    position: absolute;
+    top: -2px;
+    right: 20px;
+    width: 100%;
 }
 
 .simulation-control__simulation-id {
@@ -16,6 +17,7 @@
     padding-left: 10px;
     align-items: center;
     font-size: 0.7em;
+    margin: 0 12px;
 }
 
 .simulation-control__simulation-id__label {
@@ -24,24 +26,36 @@
     color: #fff;
     background-color: #3660c5;
     box-shadow: 0 0 1px #555;
+    border-top-left-radius: 7px;
+}
+
+.simulation-control__simulation-id__value-wrapper {
+    position: relative;
+    display: inline-block;
+    z-index: 1;
+}
+
+.simulation-control__simulation-id__value__copied-successfully-tooltip {
+    position: absolute;
+    display: inline-block;
+    width: 100%;
+    height: 100%;
+    top: 0;
+    left: 0;
+    cursor: pointer;
 }
 
 .simulation-control__simulation-id__value {
+    position: relative;
     display: inline-block;
     padding: 6px 5px;
     border: 2px solid #3660c5;
     border-left: none;
     box-shadow: 0 0 1px #555;
+    border-bottom-right-radius: 7px;
+    cursor: pointer;
 }
 
 .simulation-control__action {
-    border-radius: 100%;
-    transform-origin: 50% 50%;
-    transform: scale(1.1, 1.1);
-}
-
-.simulation-control__action.start:before,
-.simulation-control__action.resume:before {
-    position: relative;
-    transform: translateX(1px);
+    z-index: 1;
 }

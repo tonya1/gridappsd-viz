@@ -1,17 +1,19 @@
 import { Subject, Observable, Subscription } from 'rxjs';
+import { map, filter } from 'rxjs/operators';
 
-import { ModelDictionaryMeasurement } from '../../models/model-dictionary/ModelDictionaryMeasurement';
+import { ModelDictionaryMeasurement } from '../topology/model-dictionary/ModelDictionaryMeasurement';
 import { SimulationOutputMeasurement } from './SimulationOutputMeasurement';
 import { StompClientService } from '@shared/StompClientService';
 import { SIMULATION_OUTPUT_TOPIC } from './topics';
-import { map, filter } from 'rxjs/operators';
+import { SimulationControlService, SimulationStatus } from './SimulationControlService';
 
 export class SimulationOutputService {
 
   private static readonly _INSTANCE = new SimulationOutputService();
 
   private readonly _stompClientService = StompClientService.getInstance();
-  private _modelDictionaryMeasurements: { [mRID: string]: ModelDictionaryMeasurement };
+  private readonly _simulationControlService = SimulationControlService.getInstance();
+  private _modelDictionaryMeasurements: Map<string, ModelDictionaryMeasurement>;
   private _outputTimestamp: number;
   private _simulationOutputMeasurementsStream = new Subject<SimulationOutputMeasurement[]>();
   private _simulationOutputSubscription: Subscription;
@@ -46,7 +48,7 @@ export class SimulationOutputService {
     return this._outputTimestamp;
   }
 
-  setModelDictionaryMeasurements(value: { [mRID: string]: ModelDictionaryMeasurement }) {
+  setModelDictionaryMeasurements(value: Map<string, ModelDictionaryMeasurement>) {
     this._modelDictionaryMeasurements = value;
   }
 
@@ -57,6 +59,7 @@ export class SimulationOutputService {
   private _subscribeToSimulationOutputTopic() {
     return this._stompClientService.readFrom(SIMULATION_OUTPUT_TOPIC)
       .pipe(
+        filter(() => this._simulationControlService.currentStatus() === SimulationStatus.STARTED),
         map(body => JSON.parse(body)),
         filter(payload => Boolean(payload))
       )
@@ -64,7 +67,7 @@ export class SimulationOutputService {
         next: payload => {
           this._outputTimestamp = payload.message.timestamp;
           const measurements: SimulationOutputMeasurement[] = payload.message.measurements.map(measurement => {
-            const measurementInModelDictionary = this._modelDictionaryMeasurements[measurement.measurement_mrid];
+            const measurementInModelDictionary = this._modelDictionaryMeasurements.get(measurement.measurement_mrid);
             if (measurementInModelDictionary)
               return {
                 name: measurementInModelDictionary.name,

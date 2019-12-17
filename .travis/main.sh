@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/bin/bash -x
 
 # Set an option to exit immediately if any error appears
 set -o errexit
